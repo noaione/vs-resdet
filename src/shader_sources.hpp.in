@@ -1,0 +1,13 @@
+#pragma once
+
+namespace vsresdet {
+
+inline constexpr char kUnpackYShader[] = R"VSRESDET_UNPACK(
+@UNPACK_Y_SHADER@
+)VSRESDET_UNPACK";
+
+inline constexpr char kSignScoresShader[] = R"VSRESDET_SIGN(
+@SIGN_SCORES_SHADER@
+)VSRESDET_SIGN";
+
+} // namespace vsresdet

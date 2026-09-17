@@ -1,0 +1,3 @@
+vapoursynth>=80,<81
+hatchling>=1.27
+build>=1.2

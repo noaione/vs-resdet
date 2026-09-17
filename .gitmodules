@@ -1,0 +1,6 @@
+[submodule "third_party/VkFFT"]
+	path = third_party/VkFFT
+	url = https://github.com/DTolm/VkFFT.git
+[submodule "third_party/resdet"]
+	path = third_party/resdet
+	url = https://github.com/0x09/resdet.git

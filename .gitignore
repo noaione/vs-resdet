@@ -1,0 +1,24 @@
+.DS_Store
+
+# CMake
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeUserPresets.json
+
+# Python
+.venv/
+dist/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# IDEs
+.vscode/
+.idea/
+
+# Local test data
+data/
+out/
+sandbox/

@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.27", "packaging", "VapourSynth>=80,<81"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vs-resdet"
+version = "0.1.0"
+description = "Native Vulkan VapourSynth plugin for resdet"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.2",
+    "hatchling>=1.27",
+]
+
+[tool.hatch.build.targets.wheel]
+include = ["vapoursynth/plugins"]
+artifacts = [
+    "vapoursynth/plugins/*.dll",
+    "vapoursynth/plugins/*.so",
+    "vapoursynth/plugins/*.dylib",
+]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/shaders",
+    "/hatch_build.py",
+    "/CMakeLists.txt",
+    "/CMakePresets.json",
+    "/README.md",
+    "/bench",
+    "/tests",
+    "/third_party/VkFFT/vkFFT",
+    "/third_party/VkFFT/LICENSE",
+    "/LICENSE*",
+]

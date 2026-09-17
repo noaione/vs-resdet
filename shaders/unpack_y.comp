@@ -1,0 +1,72 @@
+#version 460
+
+// Unpack one VapourSynth Y plane into a tightly packed float image. The input
+// is deliberately a byte-addressed storage buffer represented as uints: this
+// works for every integer sample width VapourSynth exposes without relying on
+// scalar block layout or a particular host endianness in the shader interface.
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InputPlane {
+    uint bytes[];
+} input_plane;
+
+layout(std430, set = 0, binding = 1) writeonly buffer FloatImage {
+    float samples[];
+} float_image;
+
+layout(push_constant) uniform UnpackParameters {
+    uint width;
+    uint height;
+    uint stride_bytes;
+    uint bytes_per_sample;
+    uint bits_per_sample;
+    uint sample_type; // 0 = integer, 1 = float
+} parameters;
+
+uint load_u8(uint byte_index) {
+    uint word = input_plane.bytes[byte_index >> 2];
+    return (word >> ((byte_index & 3u) * 8u)) & 0xffu;
+}
+
+uint load_u16(uint byte_index) {
+    return load_u8(byte_index) | (load_u8(byte_index + 1u) << 8u);
+}
+
+uint load_u32(uint byte_index) {
+    return load_u8(byte_index)
+        | (load_u8(byte_index + 1u) << 8u)
+        | (load_u8(byte_index + 2u) << 16u)
+        | (load_u8(byte_index + 3u) << 24u);
+}
+
+float load_sample(uint byte_index) {
+    if (parameters.sample_type != 0u) {
+        if (parameters.bytes_per_sample == 2u) {
+            uint packed = load_u16(byte_index);
+            return unpackHalf2x16(packed).x;
+        }
+        return uintBitsToFloat(load_u32(byte_index));
+    }
+
+    uint integer_sample = parameters.bytes_per_sample == 1u
+        ? load_u8(byte_index)
+        : load_u16(byte_index);
+    uint maximum = parameters.bits_per_sample == 32u
+        ? 0xffffffffu
+        : (1u << parameters.bits_per_sample) - 1u;
+    return float(integer_sample) / float(maximum);
+}
+
+void main() {
+    uint sample_index = gl_GlobalInvocationID.x;
+    uint sample_count = parameters.width * parameters.height;
+    if (sample_index >= sample_count) {
+        return;
+    }
+
+    uint x = sample_index % parameters.width;
+    uint y = sample_index / parameters.width;
+    uint byte_index = y * parameters.stride_bytes
+        + x * parameters.bytes_per_sample;
+    float_image.samples[sample_index] = load_sample(byte_index);
+}
