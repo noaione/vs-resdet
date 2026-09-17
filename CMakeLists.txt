@@ -6,6 +6,19 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# VapourSynth 80's VSVulkan4 API requires Vulkan 1.4 headers. When a Vulkan
+# SDK is installed, prefer its headers, loader, and CMake packages over older
+# distribution packages such as Ubuntu's system libvulkan-dev.
+set(VULKAN_SDK_ROOT "")
+if(DEFINED ENV{VULKAN_SDK})
+    set(VULKAN_SDK_ROOT "$ENV{VULKAN_SDK}")
+    list(PREPEND CMAKE_PREFIX_PATH
+        "${VULKAN_SDK_ROOT}"
+        "${VULKAN_SDK_ROOT}/lib/cmake"
+        "${VULKAN_SDK_ROOT}/Lib/cmake"
+    )
+endif()
+
 find_package(Vulkan REQUIRED)
 
 # VapourSynth 80 ships its development headers with the Python package. Query
@@ -47,6 +60,18 @@ if(APPLE)
             CACHE PATH "glslang CMake package directory")
     endif()
 endif()
+if(VULKAN_SDK_ROOT AND NOT glslang_DIR)
+    foreach(GLSLANG_CMAKE_DIR
+        "${VULKAN_SDK_ROOT}/lib/cmake/glslang"
+        "${VULKAN_SDK_ROOT}/Lib/cmake/glslang"
+    )
+        if(EXISTS "${GLSLANG_CMAKE_DIR}")
+            set(glslang_DIR "${GLSLANG_CMAKE_DIR}"
+                CACHE PATH "glslang CMake package directory")
+            break()
+        endif()
+    endforeach()
+endif()
 find_package(glslang CONFIG REQUIRED)
 
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shaders/unpack_y.comp" UNPACK_Y_SHADER)
@@ -65,7 +90,11 @@ configure_file(
 
 find_program(GLSLANG_VALIDATOR
     NAMES glslangValidator
-    HINTS "/opt/homebrew/bin" "/usr/local/bin"
+    HINTS
+        "${VULKAN_SDK_ROOT}/bin"
+        "${VULKAN_SDK_ROOT}/Bin"
+        "/opt/homebrew/bin"
+        "/usr/local/bin"
 )
 if(GLSLANG_VALIDATOR)
     set(SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
