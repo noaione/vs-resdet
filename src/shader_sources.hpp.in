@@ -10,8 +10,4 @@ inline constexpr char kScoreMethodsShader[] = R"VSRESDET_SCORE(
 @SCORE_METHODS_SHADER@
 )VSRESDET_SCORE";
 
-inline constexpr char kTransposeShader[] = R"VSRESDET_TRANS(
-@TRANSPOSE_SHADER@
-)VSRESDET_TRANS";
-
 } // namespace vsresdet

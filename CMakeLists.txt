@@ -128,11 +128,9 @@ endif()
 
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shaders/unpack_y.comp" UNPACK_Y_SHADER)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shaders/score_methods.comp" SCORE_METHODS_SHADER)
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shaders/transpose.comp" TRANSPOSE_SHADER)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/unpack_y.comp"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/score_methods.comp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/transpose.comp"
 )
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/shader_sources.hpp.in"
@@ -152,7 +150,6 @@ if(GLSLANG_VALIDATOR)
     set(SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
     set(UNPACK_SHADER_SPV "${SHADER_OUTPUT_DIR}/unpack_y.comp.spv")
     set(SCORE_SHADER_SPV "${SHADER_OUTPUT_DIR}/score_methods.comp.spv")
-    set(TRANSPOSE_SHADER_SPV "${SHADER_OUTPUT_DIR}/transpose.comp.spv")
     add_custom_command(
         OUTPUT "${UNPACK_SHADER_SPV}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_OUTPUT_DIR}"
@@ -171,17 +168,8 @@ if(GLSLANG_VALIDATOR)
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/score_methods.comp"
         VERBATIM
     )
-    add_custom_command(
-        OUTPUT "${TRANSPOSE_SHADER_SPV}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_OUTPUT_DIR}"
-        COMMAND "${GLSLANG_VALIDATOR}" --target-env vulkan1.3 -V
-            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/transpose.comp"
-            -o "${TRANSPOSE_SHADER_SPV}"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/transpose.comp"
-        VERBATIM
-    )
     add_custom_target(vs-resdet-shaders ALL
-        DEPENDS "${UNPACK_SHADER_SPV}" "${SCORE_SHADER_SPV}" "${TRANSPOSE_SHADER_SPV}")
+        DEPENDS "${UNPACK_SHADER_SPV}" "${SCORE_SHADER_SPV}")
 else()
     message(FATAL_ERROR "glslangValidator is required to validate the resdet shaders")
 endif()

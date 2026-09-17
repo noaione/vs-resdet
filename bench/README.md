@@ -64,12 +64,12 @@ when a score differs by more than `--atol` (default `2e-5`).
 ## latest result
 
 measured on an Apple M4 desktop with the debug plugin, using a 1280x720
-synthetic `gray32` clip, 20 timed frames, one warmup frame, and `range=1`:
+synthetic `gray32` clip, 100 timed frames, five warmup frames, and `range=1`:
 
 ```text
-vs-resdet gpu:         537.03 fps
-original resdet cpu:   94.13 fps
-gpu speedup:           5.71x
+vs-resdet gpu:         742.62 fps
+original resdet cpu:   94.84 fps
+gpu speedup:           7.83x
 ```
 
 ## latest consistency result

@@ -42,11 +42,6 @@ struct UnpackParameters {
     uint32_t sampleType;
 };
 
-struct TransposeParameters {
-    uint32_t width;
-    uint32_t height;
-};
-
 struct ScoreParameters {
     uint32_t width;
     uint32_t height;
@@ -57,7 +52,6 @@ struct ScoreParameters {
 };
 
 static_assert(sizeof(UnpackParameters) <= 128);
-static_assert(sizeof(TransposeParameters) <= 128);
 static_assert(sizeof(ScoreParameters) <= 128);
 
 struct Buffer {
@@ -69,7 +63,6 @@ struct PipelineState {
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipeline unpackPipeline = VK_NULL_HANDLE;
-    VkPipeline transposePipeline = VK_NULL_HANDLE;
     VkPipeline scorePipeline = VK_NULL_HANDLE;
 };
 
@@ -92,14 +85,9 @@ struct AnalyzeData {
     VkQueue computeQueue = VK_NULL_HANDLE;
 
     Buffer planBuffer;
-    Buffer planTempBuffer;
     uint64_t fftBufferSize = 0;
-    VkBuffer fftWidthBuffer = VK_NULL_HANDLE;
-    VkBuffer fftHeightBuffer = VK_NULL_HANDLE;
-    VkFFTApplication fftWidth{};
-    VkFFTApplication fftHeight{};
-    bool fftWidthInitialized = false;
-    bool fftHeightInitialized = false;
+    VkBuffer fftBuffer = VK_NULL_HANDLE;
+    VkFFTApplication fft2D{};
     bool fftInitialized = false;
     PipelineState pipelines{};
 
@@ -404,44 +392,32 @@ static bool createPipelines(AnalyzeData &data, std::string &error) {
         data.functions->vkDestroyShaderModule(data.handles.device, unpackModule, nullptr);
         return false;
     }
-    VkShaderModule transposeModule = createShaderModule(data, kTransposeShader, error);
-    if (!transposeModule) {
-        data.functions->vkDestroyShaderModule(data.handles.device, unpackModule, nullptr);
-        data.functions->vkDestroyShaderModule(data.handles.device, scoreModule, nullptr);
-        return false;
-    }
-
-    VkPipelineShaderStageCreateInfo stages[3]{};
+    VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_COMPUTE_BIT;
     stages[0].module = unpackModule;
     stages[0].pName = "main";
     stages[1] = stages[0];
-    stages[1].module = transposeModule;
-    stages[2] = stages[0];
-    stages[2].module = scoreModule;
+    stages[1].module = scoreModule;
 
-    VkComputePipelineCreateInfo pipelineInfos[3]{};
+    VkComputePipelineCreateInfo pipelineInfos[2]{};
     for (auto &info : pipelineInfos) {
         info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         info.layout = data.pipelines.pipelineLayout;
     }
     pipelineInfos[0].stage = stages[0];
     pipelineInfos[1].stage = stages[1];
-    pipelineInfos[2].stage = stages[2];
-    VkPipeline created[3]{VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkPipeline created[2]{VK_NULL_HANDLE, VK_NULL_HANDLE};
     if (data.functions->vkCreateComputePipelines(
-            data.handles.device, VK_NULL_HANDLE, 3, pipelineInfos,
+            data.handles.device, VK_NULL_HANDLE, 2, pipelineInfos,
             nullptr, created) != VK_SUCCESS) {
         error = "Vulkan could not create the resdet compute pipelines";
     } else {
         data.pipelines.unpackPipeline = created[0];
-        data.pipelines.transposePipeline = created[1];
-        data.pipelines.scorePipeline = created[2];
+        data.pipelines.scorePipeline = created[1];
     }
 
     data.functions->vkDestroyShaderModule(data.handles.device, unpackModule, nullptr);
-    data.functions->vkDestroyShaderModule(data.handles.device, transposeModule, nullptr);
     data.functions->vkDestroyShaderModule(data.handles.device, scoreModule, nullptr);
     return error.empty();
 }
@@ -454,10 +430,6 @@ static void destroyPipelines(AnalyzeData &data) {
     if (data.pipelines.scorePipeline) {
         data.functions->vkDestroyPipeline(data.handles.device,
                                           data.pipelines.scorePipeline, nullptr);
-    }
-    if (data.pipelines.transposePipeline) {
-        data.functions->vkDestroyPipeline(data.handles.device,
-                                          data.pipelines.transposePipeline, nullptr);
     }
     if (data.pipelines.pipelineLayout) {
         data.functions->vkDestroyPipelineLayout(data.handles.device,
@@ -573,9 +545,7 @@ static const VSFrame *Analyze(AnalyzeData &data, const VSFrame *input,
     const VkDeviceSize scoreBytes =
         (static_cast<VkDeviceSize>(width) + static_cast<VkDeviceSize>(height)) * sizeof(float);
     // Keep the transform in the buffer bound when the VkFFT plan was created.
-    // This avoids rebinding VkFFT's descriptors for every frame and also makes
-    // the plan's axis-to-axis ping-pong path deterministic on Vulkan drivers
-    // that expose push descriptors only through Vulkan 1.4's core name.
+    // This avoids rebinding VkFFT's descriptors for every frame.
     const VkBuffer dctBuffer = data.planBuffer.info.buffer;
     Buffer scoreBuffer = createBuffer(
         data,
@@ -634,10 +604,10 @@ static const VSFrame *Analyze(AnalyzeData &data, const VSFrame *input,
 
     VkFFTLaunchParams launchParameters{};
     launchParameters.commandBuffer = &commandBuffer;
-    launchParameters.buffer = &data.fftWidthBuffer;
+    launchParameters.buffer = &data.fftBuffer;
     {
         ActiveVkFFTDispatchScope active(&data.dispatch);
-        VkFFTResult result = VkFFTAppend(&data.fftWidth, 0, &launchParameters);
+        VkFFTResult result = VkFFTAppend(&data.fft2D, 0, &launchParameters);
         if (result != VKFFT_SUCCESS) {
             error = vkfftError(result);
             data.gpu->gpuExecAbandon(context);
@@ -646,56 +616,6 @@ static const VSFrame *Analyze(AnalyzeData &data, const VSFrame *input,
         }
     }
 
-    bufferBarrier(data, commandBuffer, dctBuffer, sampleBytes,
-                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                  VK_ACCESS_2_SHADER_WRITE_BIT,
-                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                  VK_ACCESS_2_SHADER_READ_BIT);
-
-    auto recordTransposePass = [&](VkBuffer source, VkBuffer destination,
-                                   uint32_t sourceWidth, uint32_t sourceHeight) {
-        TransposeParameters transpose{
-            .width = sourceWidth,
-            .height = sourceHeight,
-        };
-        data.functions->vkCmdBindPipeline(
-            commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-            data.pipelines.transposePipeline);
-        pushStorageDescriptors(data, commandBuffer, source, sampleBytes,
-                               destination, sampleBytes);
-        data.dispatch.cmdPushConstants(
-            commandBuffer, data.pipelines.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
-            0, sizeof(transpose), &transpose);
-        data.functions->vkCmdDispatch(
-            commandBuffer, static_cast<uint32_t>((sampleCount + kUnpackLocalSize - 1) / kUnpackLocalSize),
-            1, 1);
-    };
-
-    recordTransposePass(dctBuffer, data.planTempBuffer.info.buffer, width, height);
-    bufferBarrier(data, commandBuffer, data.planTempBuffer.info.buffer, sampleBytes,
-                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                  VK_ACCESS_2_SHADER_WRITE_BIT,
-                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                  VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
-
-    launchParameters.buffer = &data.fftHeightBuffer;
-    {
-        ActiveVkFFTDispatchScope active(&data.dispatch);
-        VkFFTResult result = VkFFTAppend(&data.fftHeight, 0, &launchParameters);
-        if (result != VKFFT_SUCCESS) {
-            error = vkfftError(result);
-            data.gpu->gpuExecAbandon(context);
-            destroyBuffer(data, scoreBuffer);
-            return nullptr;
-        }
-    }
-
-    bufferBarrier(data, commandBuffer, data.planTempBuffer.info.buffer, sampleBytes,
-                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                  VK_ACCESS_2_SHADER_WRITE_BIT,
-                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                  VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
-    recordTransposePass(data.planTempBuffer.info.buffer, dctBuffer, height, width);
     bufferBarrier(data, commandBuffer, dctBuffer, sampleBytes,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                   VK_ACCESS_2_SHADER_WRITE_BIT,
@@ -808,16 +728,6 @@ static bool initializeVkFFT(AnalyzeData &data, std::string &error) {
     if (!data.planBuffer.handle) {
         return false;
     }
-    // The second buffer holds the transposed image between the two 1D passes.
-    // Together, the width pass, transpose, height pass, and transpose back are
-    // a 2D DCT-II while keeping each VkFFT plan on a single, well-defined axis.
-    data.planTempBuffer = createBuffer(data, bufferBytes * 2,
-                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, error);
-    if (!data.planTempBuffer.handle) {
-        destroyBuffer(data, data.planBuffer);
-        return false;
-    }
-
     VkCommandPoolCreateInfo poolInfo{
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .pNext = nullptr,
@@ -827,7 +737,6 @@ static bool initializeVkFFT(AnalyzeData &data, std::string &error) {
     if (data.functions->vkCreateCommandPool(data.handles.device, &poolInfo,
                                             nullptr, &data.vkfftCommandPool) != VK_SUCCESS) {
         error = "Vulkan could not create the VkFFT command pool";
-        destroyBuffer(data, data.planTempBuffer);
         destroyBuffer(data, data.planBuffer);
         return false;
     }
@@ -842,7 +751,6 @@ static bool initializeVkFFT(AnalyzeData &data, std::string &error) {
         data.functions->vkDestroyCommandPool(data.handles.device,
                                              data.vkfftCommandPool, nullptr);
         data.vkfftCommandPool = VK_NULL_HANDLE;
-        destroyBuffer(data, data.planTempBuffer);
         destroyBuffer(data, data.planBuffer);
         return false;
     }
@@ -860,43 +768,25 @@ static bool initializeVkFFT(AnalyzeData &data, std::string &error) {
     VkFFTResult result = VKFFT_SUCCESS;
     {
         ActiveVkFFTDispatchScope active(&data.dispatch);
-        auto initializePlan = [&](VkFFTApplication &application, VkBuffer *buffer,
-                                  uint64_t transformSize, uint64_t batchCount) {
-            VkFFTConfiguration configuration{};
-            configuration.FFTdim = 1;
-            configuration.size[0] = transformSize;
-            configuration.numberBatches = batchCount;
-            configuration.performDCT = 2;
-            configuration.device = &data.handles.device;
-            configuration.physicalDevice = &data.handles.physicalDevice;
-            configuration.queue = &data.computeQueue;
-            configuration.commandPool = &data.vkfftCommandPool;
-            configuration.fence = &data.vkfftFence;
-            configuration.isCompilerInitialized = 1;
-            configuration.bufferNum = 1;
-            configuration.bufferSize = &data.fftBufferSize;
-            configuration.buffer = buffer;
-            return initializeVkFFT(&application, configuration);
-        };
         data.fftBufferSize = bufferBytes;
-        data.fftWidthBuffer = data.planBuffer.info.buffer;
-        data.fftHeightBuffer = data.planTempBuffer.info.buffer;
-        result = initializePlan(data.fftWidth, &data.fftWidthBuffer,
-                                static_cast<uint64_t>(data.vi.width),
-                                static_cast<uint64_t>(data.vi.height));
-        if (result == VKFFT_SUCCESS) {
-            data.fftWidthInitialized = true;
-            result = initializePlan(data.fftHeight, &data.fftHeightBuffer,
-                                    static_cast<uint64_t>(data.vi.height),
-                                    static_cast<uint64_t>(data.vi.width));
-            if (result == VKFFT_SUCCESS) {
-                data.fftHeightInitialized = true;
-            }
-        }
-        if (result != VKFFT_SUCCESS && data.fftWidthInitialized) {
-            deleteVkFFT(&data.fftWidth);
-            data.fftWidthInitialized = false;
-        }
+        data.fftBuffer = data.planBuffer.info.buffer;
+
+        VkFFTConfiguration configuration{};
+        configuration.FFTdim = 2;
+        configuration.size[0] = static_cast<uint64_t>(data.vi.width);
+        configuration.size[1] = static_cast<uint64_t>(data.vi.height);
+        configuration.numberBatches = 1;
+        configuration.performDCT = 2;
+        configuration.device = &data.handles.device;
+        configuration.physicalDevice = &data.handles.physicalDevice;
+        configuration.queue = &data.computeQueue;
+        configuration.commandPool = &data.vkfftCommandPool;
+        configuration.fence = &data.vkfftFence;
+        configuration.isCompilerInitialized = 1;
+        configuration.bufferNum = 1;
+        configuration.bufferSize = &data.fftBufferSize;
+        configuration.buffer = &data.fftBuffer;
+        result = initializeVkFFT(&data.fft2D, configuration);
     }
     data.gpu->unlockVulkanQueue(data.core, vqCompute);
     if (result != VKFFT_SUCCESS) {
@@ -910,7 +800,6 @@ static bool initializeVkFFT(AnalyzeData &data, std::string &error) {
                                                  data.vkfftCommandPool, nullptr);
             data.vkfftCommandPool = VK_NULL_HANDLE;
         }
-        destroyBuffer(data, data.planTempBuffer);
         destroyBuffer(data, data.planBuffer);
         return false;
     }
@@ -930,18 +819,10 @@ static void freeAnalyzeData(AnalyzeData *data) {
     }
     if (data->fftInitialized) {
         ActiveVkFFTDispatchScope active(&data->dispatch);
-        if (data->fftHeightInitialized) {
-            deleteVkFFT(&data->fftHeight);
-            data->fftHeightInitialized = false;
-        }
-        if (data->fftWidthInitialized) {
-            deleteVkFFT(&data->fftWidth);
-            data->fftWidthInitialized = false;
-        }
+        deleteVkFFT(&data->fft2D);
         data->fftInitialized = false;
     }
     destroyPipelines(*data);
-    destroyBuffer(*data, data->planTempBuffer);
     destroyBuffer(*data, data->planBuffer);
     if (data->vkfftFence) {
         data->functions->vkDestroyFence(data->handles.device, data->vkfftFence, nullptr);
