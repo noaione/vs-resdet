@@ -8,7 +8,14 @@ version = "0.1.0"
 description = "Native Vulkan VapourSynth plugin for resdet"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "MIT"
+license-files = [
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "third_party/VkFFT/LICENSE",
+]
+authors = [{name = "noaione", email = "noaione@n4o.xyz"}]
+keywords = ["vapoursynth", "resdet"]
 
 [project.optional-dependencies]
 dev = [
@@ -35,6 +42,7 @@ include = [
     "/CMakeLists.txt",
     "/CMakePresets.json",
     "/README.md",
+    "/THIRD_PARTY_NOTICES.md",
     "/bench",
     "/tests",
     "/third_party/VkFFT/vkFFT",
