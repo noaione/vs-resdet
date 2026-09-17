@@ -20,10 +20,18 @@ using namespace vsresdet;
 
 constexpr int kVapourSynthApi = VAPOURSYNTH_API_VERSION;
 constexpr uint32_t kUnpackLocalSize = 64;
-constexpr uint32_t kSignLocalSize = 64;
+constexpr uint32_t kScoreLocalSize = 64;
 constexpr size_t kErrorBufferSize = 1024;
 constexpr const char *kWidthScoresProperty = "resdet_width_scores";
 constexpr const char *kHeightScoresProperty = "resdet_height_scores";
+constexpr const char *kMethodProperty = "resdet_method";
+
+enum class Method : uint32_t {
+    Sign = 0,
+    Magnitude = 1,
+    Original = 2,
+    ZeroCrossing = 3,
+};
 
 struct UnpackParameters {
     uint32_t width;
@@ -34,16 +42,23 @@ struct UnpackParameters {
     uint32_t sampleType;
 };
 
-struct SignParameters {
+struct TransposeParameters {
+    uint32_t width;
+    uint32_t height;
+};
+
+struct ScoreParameters {
     uint32_t width;
     uint32_t height;
     uint32_t axis;
     uint32_t range;
     uint32_t outputOffset;
+    uint32_t method;
 };
 
 static_assert(sizeof(UnpackParameters) <= 128);
-static_assert(sizeof(SignParameters) <= 128);
+static_assert(sizeof(TransposeParameters) <= 128);
+static_assert(sizeof(ScoreParameters) <= 128);
 
 struct Buffer {
     VSGPUBuffer *handle = nullptr;
@@ -54,13 +69,15 @@ struct PipelineState {
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipeline unpackPipeline = VK_NULL_HANDLE;
-    VkPipeline signPipeline = VK_NULL_HANDLE;
+    VkPipeline transposePipeline = VK_NULL_HANDLE;
+    VkPipeline scorePipeline = VK_NULL_HANDLE;
 };
 
 struct AnalyzeData {
     VSNode *input = nullptr;
     VSVideoInfo vi{};
     int range = 1;
+    Method method = Method::Sign;
 
     VSCore *core = nullptr;
     const VSAPI *vsapi = nullptr;
@@ -76,13 +93,16 @@ struct AnalyzeData {
 
     Buffer planBuffer;
     Buffer planTempBuffer;
-    VkFFTApplication fft{};
+    uint64_t fftBufferSize = 0;
+    VkBuffer fftWidthBuffer = VK_NULL_HANDLE;
+    VkBuffer fftHeightBuffer = VK_NULL_HANDLE;
+    VkFFTApplication fftWidth{};
+    VkFFTApplication fftHeight{};
+    bool fftWidthInitialized = false;
+    bool fftHeightInitialized = false;
     bool fftInitialized = false;
     PipelineState pipelines{};
 
-    // VkFFT mutates descriptor pointers in VkFFTAppend when launch buffers
-    // change. Serialize that small shared plan, while the execution pool still
-    // supplies the correct queue/timeline synchronization.
     std::mutex analyzeMutex;
 };
 
@@ -98,6 +118,49 @@ static std::string errorMessage(const char *prefix, const char *detail) {
         result += detail;
     }
     return result;
+}
+
+static const char *methodName(Method method) {
+    switch (method) {
+    case Method::Sign:
+        return "sign";
+    case Method::Magnitude:
+        return "mag";
+    case Method::Original:
+        return "orig";
+    case Method::ZeroCrossing:
+        return "zerox";
+    }
+    return "sign";
+}
+
+static bool parseMethod(const VSMap *map, const VSAPI *vsapi,
+                        Method &method, std::string &error) {
+    method = Method::Sign;
+    if (vsapi->mapNumElements(map, "method") == 0) {
+        return true;
+    }
+
+    int mapError = 0;
+    const char *value = vsapi->mapGetData(map, "method", 0, &mapError);
+    if (mapError || !value) {
+        error = "resdet.Analyze: method must be one of sign, mag, orig, or zerox";
+        return false;
+    }
+    const std::string name(value);
+    if (name == "sign") {
+        method = Method::Sign;
+    } else if (name == "mag") {
+        method = Method::Magnitude;
+    } else if (name == "orig") {
+        method = Method::Original;
+    } else if (name == "zerox") {
+        method = Method::ZeroCrossing;
+    } else {
+        error = "resdet.Analyze: method must be one of sign, mag, orig, or zerox";
+        return false;
+    }
+    return true;
 }
 
 static std::string vkfftError(VkFFTResult result) {
@@ -154,7 +217,7 @@ static VkFFTDispatch makeDispatch(const VSVulkanCoreHandles &handles,
     dispatch.cmdPushDescriptorSetKHR = reinterpret_cast<PFN_vkCmdPushDescriptorSetKHR>(loadDevice("vkCmdPushDescriptorSetKHR"));
     if (!dispatch.cmdPushDescriptorSetKHR) {
         dispatch.cmdPushDescriptorSetKHR = reinterpret_cast<PFN_vkCmdPushDescriptorSetKHR>(
-            functions->vkGetDeviceProcAddr(handles.device, "vkCmdPushDescriptorSet"));
+            functions->vkCmdPushDescriptorSet);
     }
 #define LOAD_DEVICE(member, name) \
     dispatch.member = reinterpret_cast<PFN_vk##name>(loadDevice("vk" #name))
@@ -336,39 +399,50 @@ static bool createPipelines(AnalyzeData &data, std::string &error) {
     if (!unpackModule) {
         return false;
     }
-    VkShaderModule signModule = createShaderModule(data, kSignScoresShader, error);
-    if (!signModule) {
+    VkShaderModule scoreModule = createShaderModule(data, kScoreMethodsShader, error);
+    if (!scoreModule) {
         data.functions->vkDestroyShaderModule(data.handles.device, unpackModule, nullptr);
         return false;
     }
+    VkShaderModule transposeModule = createShaderModule(data, kTransposeShader, error);
+    if (!transposeModule) {
+        data.functions->vkDestroyShaderModule(data.handles.device, unpackModule, nullptr);
+        data.functions->vkDestroyShaderModule(data.handles.device, scoreModule, nullptr);
+        return false;
+    }
 
-    VkPipelineShaderStageCreateInfo stages[2]{};
+    VkPipelineShaderStageCreateInfo stages[3]{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_COMPUTE_BIT;
     stages[0].module = unpackModule;
     stages[0].pName = "main";
     stages[1] = stages[0];
-    stages[1].module = signModule;
+    stages[1].module = transposeModule;
+    stages[2] = stages[0];
+    stages[2].module = scoreModule;
 
-    VkComputePipelineCreateInfo pipelineInfos[2]{};
+    VkComputePipelineCreateInfo pipelineInfos[3]{};
     for (auto &info : pipelineInfos) {
         info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         info.layout = data.pipelines.pipelineLayout;
     }
     pipelineInfos[0].stage = stages[0];
     pipelineInfos[1].stage = stages[1];
-    VkPipeline created[2]{VK_NULL_HANDLE, VK_NULL_HANDLE};
+    pipelineInfos[2].stage = stages[2];
+    VkPipeline created[3]{VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
     if (data.functions->vkCreateComputePipelines(
-            data.handles.device, VK_NULL_HANDLE, 2, pipelineInfos,
+            data.handles.device, VK_NULL_HANDLE, 3, pipelineInfos,
             nullptr, created) != VK_SUCCESS) {
         error = "Vulkan could not create the resdet compute pipelines";
     } else {
         data.pipelines.unpackPipeline = created[0];
-        data.pipelines.signPipeline = created[1];
+        data.pipelines.transposePipeline = created[1];
+        data.pipelines.scorePipeline = created[2];
     }
 
     data.functions->vkDestroyShaderModule(data.handles.device, unpackModule, nullptr);
-    data.functions->vkDestroyShaderModule(data.handles.device, signModule, nullptr);
+    data.functions->vkDestroyShaderModule(data.handles.device, transposeModule, nullptr);
+    data.functions->vkDestroyShaderModule(data.handles.device, scoreModule, nullptr);
     return error.empty();
 }
 
@@ -377,9 +451,13 @@ static void destroyPipelines(AnalyzeData &data) {
         data.functions->vkDestroyPipeline(data.handles.device,
                                           data.pipelines.unpackPipeline, nullptr);
     }
-    if (data.pipelines.signPipeline) {
+    if (data.pipelines.scorePipeline) {
         data.functions->vkDestroyPipeline(data.handles.device,
-                                          data.pipelines.signPipeline, nullptr);
+                                          data.pipelines.scorePipeline, nullptr);
+    }
+    if (data.pipelines.transposePipeline) {
+        data.functions->vkDestroyPipeline(data.handles.device,
+                                          data.pipelines.transposePipeline, nullptr);
     }
     if (data.pipelines.pipelineLayout) {
         data.functions->vkDestroyPipelineLayout(data.handles.device,
@@ -492,11 +570,13 @@ static const VSFrame *Analyze(AnalyzeData &data, const VSFrame *input,
     }
 
     const VkDeviceSize sampleBytes = static_cast<VkDeviceSize>(width) * height * sizeof(float);
-    const VkDeviceSize scoreBytes = static_cast<VkDeviceSize>(width + height) * sizeof(float);
-    Buffer dctBuffer = createBuffer(data, sampleBytes, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, error);
-    if (!dctBuffer.handle) {
-        return nullptr;
-    }
+    const VkDeviceSize scoreBytes =
+        (static_cast<VkDeviceSize>(width) + static_cast<VkDeviceSize>(height)) * sizeof(float);
+    // Keep the transform in the buffer bound when the VkFFT plan was created.
+    // This avoids rebinding VkFFT's descriptors for every frame and also makes
+    // the plan's axis-to-axis ping-pong path deterministic on Vulkan drivers
+    // that expose push descriptors only through Vulkan 1.4's core name.
+    const VkBuffer dctBuffer = data.planBuffer.info.buffer;
     Buffer scoreBuffer = createBuffer(
         data,
         scoreBytes,
@@ -507,7 +587,6 @@ static const VSFrame *Analyze(AnalyzeData &data, const VSFrame *input,
         if (scoreBuffer.handle) {
             destroyBuffer(data, scoreBuffer);
         }
-        destroyBuffer(data, dctBuffer);
         if (error.empty()) {
             error = "resdet.Analyze could not obtain a coherent mapped score buffer";
         }
@@ -519,7 +598,6 @@ static const VSFrame *Analyze(AnalyzeData &data, const VSFrame *input,
         data.execPool, errorText, sizeof(errorText));
     if (!context) {
         destroyBuffer(data, scoreBuffer);
-        destroyBuffer(data, dctBuffer);
         error = errorText[0] ? errorText : "VapourSynth could not acquire a GPU execution context";
         return nullptr;
     }
@@ -539,7 +617,7 @@ static const VSFrame *Analyze(AnalyzeData &data, const VSFrame *input,
         commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
         data.pipelines.unpackPipeline);
     pushStorageDescriptors(data, commandBuffer, plane.buffer, plane.bufferSize,
-                           dctBuffer.info.buffer, sampleBytes);
+                           dctBuffer, sampleBytes);
     data.dispatch.cmdPushConstants(
         commandBuffer, data.pipelines.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
         0, sizeof(unpack), &unpack);
@@ -548,63 +626,118 @@ static const VSFrame *Analyze(AnalyzeData &data, const VSFrame *input,
         commandBuffer, static_cast<uint32_t>((sampleCount + kUnpackLocalSize - 1) / kUnpackLocalSize),
         1, 1);
 
-    bufferBarrier(data, commandBuffer, dctBuffer.info.buffer, sampleBytes,
+    bufferBarrier(data, commandBuffer, dctBuffer, sampleBytes,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                   VK_ACCESS_2_SHADER_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                   VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
 
-    VkBuffer fftBuffers[] = {dctBuffer.info.buffer};
     VkFFTLaunchParams launchParameters{};
     launchParameters.commandBuffer = &commandBuffer;
-    launchParameters.buffer = fftBuffers;
+    launchParameters.buffer = &data.fftWidthBuffer;
     {
         ActiveVkFFTDispatchScope active(&data.dispatch);
-        VkFFTResult result = VkFFTAppend(&data.fft, 0, &launchParameters);
+        VkFFTResult result = VkFFTAppend(&data.fftWidth, 0, &launchParameters);
         if (result != VKFFT_SUCCESS) {
             error = vkfftError(result);
             data.gpu->gpuExecAbandon(context);
             destroyBuffer(data, scoreBuffer);
-            destroyBuffer(data, dctBuffer);
             return nullptr;
         }
     }
 
-    bufferBarrier(data, commandBuffer, dctBuffer.info.buffer, sampleBytes,
+    bufferBarrier(data, commandBuffer, dctBuffer, sampleBytes,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                   VK_ACCESS_2_SHADER_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                   VK_ACCESS_2_SHADER_READ_BIT);
 
-    auto recordSignPass = [&](uint32_t axis, uint32_t outputOffset) {
-        SignParameters sign{
+    auto recordTransposePass = [&](VkBuffer source, VkBuffer destination,
+                                   uint32_t sourceWidth, uint32_t sourceHeight) {
+        TransposeParameters transpose{
+            .width = sourceWidth,
+            .height = sourceHeight,
+        };
+        data.functions->vkCmdBindPipeline(
+            commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+            data.pipelines.transposePipeline);
+        pushStorageDescriptors(data, commandBuffer, source, sampleBytes,
+                               destination, sampleBytes);
+        data.dispatch.cmdPushConstants(
+            commandBuffer, data.pipelines.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+            0, sizeof(transpose), &transpose);
+        data.functions->vkCmdDispatch(
+            commandBuffer, static_cast<uint32_t>((sampleCount + kUnpackLocalSize - 1) / kUnpackLocalSize),
+            1, 1);
+    };
+
+    recordTransposePass(dctBuffer, data.planTempBuffer.info.buffer, width, height);
+    bufferBarrier(data, commandBuffer, data.planTempBuffer.info.buffer, sampleBytes,
+                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                  VK_ACCESS_2_SHADER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                  VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+
+    launchParameters.buffer = &data.fftHeightBuffer;
+    {
+        ActiveVkFFTDispatchScope active(&data.dispatch);
+        VkFFTResult result = VkFFTAppend(&data.fftHeight, 0, &launchParameters);
+        if (result != VKFFT_SUCCESS) {
+            error = vkfftError(result);
+            data.gpu->gpuExecAbandon(context);
+            destroyBuffer(data, scoreBuffer);
+            return nullptr;
+        }
+    }
+
+    bufferBarrier(data, commandBuffer, data.planTempBuffer.info.buffer, sampleBytes,
+                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                  VK_ACCESS_2_SHADER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                  VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+    recordTransposePass(data.planTempBuffer.info.buffer, dctBuffer, height, width);
+    bufferBarrier(data, commandBuffer, dctBuffer, sampleBytes,
+                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                  VK_ACCESS_2_SHADER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                  VK_ACCESS_2_SHADER_READ_BIT);
+
+    const VkBuffer scoreSource = dctBuffer;
+    auto recordScorePass = [&](uint32_t axis, uint32_t outputOffset) {
+        ScoreParameters score{
             .width = width,
             .height = height,
             .axis = axis,
             .range = static_cast<uint32_t>(data.range),
             .outputOffset = outputOffset,
+            .method = static_cast<uint32_t>(data.method),
         };
         data.functions->vkCmdBindPipeline(
             commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-            data.pipelines.signPipeline);
-        pushStorageDescriptors(data, commandBuffer, dctBuffer.info.buffer, sampleBytes,
+            data.pipelines.scorePipeline);
+        pushStorageDescriptors(data, commandBuffer, scoreSource, sampleBytes,
                                scoreBuffer.info.buffer, scoreBytes);
         data.dispatch.cmdPushConstants(
             commandBuffer, data.pipelines.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
-            0, sizeof(sign), &sign);
+            0, sizeof(score), &score);
         uint32_t length = axis == 0 ? width : height;
         data.functions->vkCmdDispatch(commandBuffer,
-                                      (length + kSignLocalSize - 1) / kSignLocalSize,
+                                      (length + kScoreLocalSize - 1) / kScoreLocalSize,
                                       1, 1);
     };
 
-    recordSignPass(0, 0);
+    recordScorePass(0, 0);
     bufferBarrier(data, commandBuffer, scoreBuffer.info.buffer, scoreBytes,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                   VK_ACCESS_2_SHADER_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                   VK_ACCESS_2_SHADER_WRITE_BIT);
-    recordSignPass(1, width);
+    recordScorePass(1, width);
+    bufferBarrier(data, commandBuffer, scoreBuffer.info.buffer, scoreBytes,
+                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                  VK_ACCESS_2_SHADER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_HOST_BIT,
+                  VK_ACCESS_2_HOST_READ_BIT);
 
     std::memset(errorText, 0, sizeof(errorText));
     if (data.gpu->gpuExecSubmit(context, nullptr, errorText,
@@ -612,7 +745,6 @@ static const VSFrame *Analyze(AnalyzeData &data, const VSFrame *input,
         error = errorText[0] ? errorText : "VapourSynth could not submit the resdet GPU work";
         data.gpu->gpuExecPoolWaitIdle(data.execPool, nullptr, 0);
         destroyBuffer(data, scoreBuffer);
-        destroyBuffer(data, dctBuffer);
         return nullptr;
     }
 
@@ -622,7 +754,6 @@ static const VSFrame *Analyze(AnalyzeData &data, const VSFrame *input,
     if (drain != gdDrained) {
         error = errorText[0] ? errorText : "The resdet GPU execution did not complete";
         destroyBuffer(data, scoreBuffer);
-        destroyBuffer(data, dctBuffer);
         return nullptr;
     }
 
@@ -641,7 +772,6 @@ static const VSFrame *Analyze(AnalyzeData &data, const VSFrame *input,
     if (!output) {
         error = "VapourSynth could not create the GPU Analyze output frame";
         destroyBuffer(data, scoreBuffer);
-        destroyBuffer(data, dctBuffer);
         return nullptr;
     }
 
@@ -649,11 +779,14 @@ static const VSFrame *Analyze(AnalyzeData &data, const VSFrame *input,
     if (data.vsapi->mapSetFloatArray(properties, kWidthScoresProperty,
                                      widthScores.data(), static_cast<int>(widthScores.size())) != 0
         || data.vsapi->mapSetFloatArray(properties, kHeightScoresProperty,
-                                        heightScores.data(), static_cast<int>(heightScores.size())) != 0) {
+                                        heightScores.data(), static_cast<int>(heightScores.size())) != 0
+        || data.vsapi->mapSetData(properties, kMethodProperty,
+                                  methodName(data.method),
+                                  static_cast<int>(std::strlen(methodName(data.method))),
+                                  dtUtf8, 0) != 0) {
         data.vsapi->freeFrame(output);
         error = "VapourSynth could not attach resdet score properties";
         destroyBuffer(data, scoreBuffer);
-        destroyBuffer(data, dctBuffer);
         return nullptr;
     }
     const int64_t bounds[2] = {data.range, static_cast<int64_t>(data.vi.width) - data.range};
@@ -663,15 +796,10 @@ static const VSFrame *Analyze(AnalyzeData &data, const VSFrame *input,
     data.vsapi->mapSetInt(properties, "resdet_range", data.range, 0);
 
     destroyBuffer(data, scoreBuffer);
-    destroyBuffer(data, dctBuffer);
     return output;
 }
 
 static bool initializeVkFFT(AnalyzeData &data, std::string &error) {
-    uint64_t dimensions[2] = {
-        static_cast<uint64_t>(data.vi.width),
-        static_cast<uint64_t>(data.vi.height),
-    };
     VkDeviceSize bufferBytes = static_cast<VkDeviceSize>(data.vi.width)
         * static_cast<VkDeviceSize>(data.vi.height) * sizeof(float);
 
@@ -680,9 +808,9 @@ static bool initializeVkFFT(AnalyzeData &data, std::string &error) {
     if (!data.planBuffer.handle) {
         return false;
     }
-    // A DCT-II normally needs no reorder buffer after disableReorderFourStep,
-    // but keeping a core-owned fallback buffer makes non-power-of-two and
-    // Bluestein plans safe without letting VkFFT allocate unaccounted memory.
+    // The second buffer holds the transposed image between the two 1D passes.
+    // Together, the width pass, transpose, height pass, and transpose back are
+    // a 2D DCT-II while keeping each VkFFT plan on a single, well-defined axis.
     data.planTempBuffer = createBuffer(data, bufferBytes * 2,
                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, error);
     if (!data.planTempBuffer.handle) {
@@ -728,37 +856,47 @@ static bool initializeVkFFT(AnalyzeData &data, std::string &error) {
     };
     data.functions->vkGetDeviceQueue2(data.handles.device, &queueInfo, &data.computeQueue);
 
-    uint64_t sizes[1] = {bufferBytes};
-    uint64_t tempSizes[1] = {bufferBytes * 2};
-    VkBuffer buffers[1] = {data.planBuffer.info.buffer};
-    VkBuffer tempBuffers[1] = {data.planTempBuffer.info.buffer};
-
-    VkFFTConfiguration configuration{};
-    configuration.FFTdim = 2;
-    configuration.size[0] = dimensions[0];
-    configuration.size[1] = dimensions[1];
-    configuration.performDCT = 2;
-    configuration.disableReorderFourStep = 1;
-    configuration.device = &data.handles.device;
-    configuration.physicalDevice = &data.handles.physicalDevice;
-    configuration.queue = &data.computeQueue;
-    configuration.commandPool = &data.vkfftCommandPool;
-    configuration.fence = &data.vkfftFence;
-    configuration.isCompilerInitialized = 1;
-    configuration.usePushDescriptors = 1;
-    configuration.bufferNum = 1;
-    configuration.bufferSize = sizes;
-    configuration.buffer = buffers;
-    configuration.userTempBuffer = 1;
-    configuration.tempBufferNum = 1;
-    configuration.tempBufferSize = tempSizes;
-    configuration.tempBuffer = tempBuffers;
-
     data.gpu->lockVulkanQueue(data.core, vqCompute);
-    VkFFTResult result;
+    VkFFTResult result = VKFFT_SUCCESS;
     {
         ActiveVkFFTDispatchScope active(&data.dispatch);
-        result = initializeVkFFT(&data.fft, configuration);
+        auto initializePlan = [&](VkFFTApplication &application, VkBuffer *buffer,
+                                  uint64_t transformSize, uint64_t batchCount) {
+            VkFFTConfiguration configuration{};
+            configuration.FFTdim = 1;
+            configuration.size[0] = transformSize;
+            configuration.numberBatches = batchCount;
+            configuration.performDCT = 2;
+            configuration.device = &data.handles.device;
+            configuration.physicalDevice = &data.handles.physicalDevice;
+            configuration.queue = &data.computeQueue;
+            configuration.commandPool = &data.vkfftCommandPool;
+            configuration.fence = &data.vkfftFence;
+            configuration.isCompilerInitialized = 1;
+            configuration.bufferNum = 1;
+            configuration.bufferSize = &data.fftBufferSize;
+            configuration.buffer = buffer;
+            return initializeVkFFT(&application, configuration);
+        };
+        data.fftBufferSize = bufferBytes;
+        data.fftWidthBuffer = data.planBuffer.info.buffer;
+        data.fftHeightBuffer = data.planTempBuffer.info.buffer;
+        result = initializePlan(data.fftWidth, &data.fftWidthBuffer,
+                                static_cast<uint64_t>(data.vi.width),
+                                static_cast<uint64_t>(data.vi.height));
+        if (result == VKFFT_SUCCESS) {
+            data.fftWidthInitialized = true;
+            result = initializePlan(data.fftHeight, &data.fftHeightBuffer,
+                                    static_cast<uint64_t>(data.vi.height),
+                                    static_cast<uint64_t>(data.vi.width));
+            if (result == VKFFT_SUCCESS) {
+                data.fftHeightInitialized = true;
+            }
+        }
+        if (result != VKFFT_SUCCESS && data.fftWidthInitialized) {
+            deleteVkFFT(&data.fftWidth);
+            data.fftWidthInitialized = false;
+        }
     }
     data.gpu->unlockVulkanQueue(data.core, vqCompute);
     if (result != VKFFT_SUCCESS) {
@@ -792,7 +930,14 @@ static void freeAnalyzeData(AnalyzeData *data) {
     }
     if (data->fftInitialized) {
         ActiveVkFFTDispatchScope active(&data->dispatch);
-        deleteVkFFT(&data->fft);
+        if (data->fftHeightInitialized) {
+            deleteVkFFT(&data->fftHeight);
+            data->fftHeightInitialized = false;
+        }
+        if (data->fftWidthInitialized) {
+            deleteVkFFT(&data->fftWidth);
+            data->fftWidthInitialized = false;
+        }
         data->fftInitialized = false;
     }
     destroyPipelines(*data);
@@ -855,6 +1000,15 @@ static void VS_CC AnalyzeCreate(const VSMap *in, VSMap *out, void *,
         vsapi->mapSetError(out, "resdet.Analyze: clip must be a video node");
         return;
     }
+
+    Method method;
+    std::string methodError;
+    if (!parseMethod(in, vsapi, method, methodError)) {
+        vsapi->freeNode(input);
+        vsapi->mapSetError(out, methodError.c_str());
+        return;
+    }
+
     int range = 1;
     if (vsapi->mapNumElements(in, "range") > 0) {
         range = static_cast<int>(vsapi->mapGetInt(in, "range", 0, &error));
@@ -864,11 +1018,15 @@ static void VS_CC AnalyzeCreate(const VSMap *in, VSMap *out, void *,
         vsapi->mapSetError(out, "resdet.Analyze: range must be a positive integer");
         return;
     }
+    if (method == Method::ZeroCrossing) {
+        range = 1;
+    }
 
     auto data = std::make_unique<AnalyzeData>();
     data->input = input;
     data->vi = *vi;
     data->range = range;
+    data->method = method;
     data->core = core;
     data->vsapi = vsapi;
     data->gpu = vsapi->getVulkanAPI();
@@ -940,6 +1098,6 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(
         "com.vs-resdet.analyze", "resdet", "A GPU-accelerated source resolution detection for upscaled images and videos.",
         VS_MAKE_VERSION(0, 1), kVapourSynthApi, 0, plugin);
     vspapi->registerFunction(
-        "Analyze", "clip:vnode:gpu;range:int:opt;", "clip:vnode:gpu;",
+        "Analyze", "clip:vnode:gpu;method:data:opt;range:int:opt;", "clip:vnode:gpu;",
         AnalyzeCreate, nullptr, plugin);
 }

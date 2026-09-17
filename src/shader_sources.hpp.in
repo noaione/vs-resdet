@@ -6,8 +6,12 @@ inline constexpr char kUnpackYShader[] = R"VSRESDET_UNPACK(
 @UNPACK_Y_SHADER@
 )VSRESDET_UNPACK";
 
-inline constexpr char kSignScoresShader[] = R"VSRESDET_SIGN(
-@SIGN_SCORES_SHADER@
-)VSRESDET_SIGN";
+inline constexpr char kScoreMethodsShader[] = R"VSRESDET_SCORE(
+@SCORE_METHODS_SHADER@
+)VSRESDET_SCORE";
+
+inline constexpr char kTransposeShader[] = R"VSRESDET_TRANS(
+@TRANSPOSE_SHADER@
+)VSRESDET_TRANS";
 
 } // namespace vsresdet

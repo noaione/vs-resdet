@@ -50,7 +50,9 @@ float load_sample(uint byte_index) {
 
     uint integer_sample = parameters.bytes_per_sample == 1u
         ? load_u8(byte_index)
-        : load_u16(byte_index);
+        : (parameters.bytes_per_sample == 2u
+            ? load_u16(byte_index)
+            : load_u32(byte_index));
     uint maximum = parameters.bits_per_sample == 32u
         ? 0xffffffffu
         : (1u << parameters.bits_per_sample) - 1u;

@@ -1,0 +1,30 @@
+#version 460
+
+// Transpose a tightly packed row-major float image. The DCT plans use one
+// batch per row/column, so this converts between their contiguous 1D layout.
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InputImage {
+    float values[];
+} input_image;
+
+layout(std430, set = 0, binding = 1) writeonly buffer OutputImage {
+    float values[];
+} output_image;
+
+layout(push_constant) uniform TransposeParameters {
+    uint width;
+    uint height;
+} parameters;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    uint count = parameters.width * parameters.height;
+    if (index >= count) {
+        return;
+    }
+
+    uint x = index % parameters.width;
+    uint y = index / parameters.width;
+    output_image.values[x * parameters.height + y] = input_image.values[index];
+}

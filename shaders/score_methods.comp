@@ -1,0 +1,190 @@
+#version 460
+
+// Calculate one complete detector score array from the 2D DCT coefficients.
+// The caller dispatches this kernel twice: axis 0 produces width scores and
+// axis 1 produces height scores. Entries outside the method's meaningful
+// range are zero, matching libresdet's bounds convention.
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Coefficients {
+    float values[];
+} coefficients;
+
+layout(std430, set = 0, binding = 1) writeonly buffer Scores {
+    float values[];
+} scores;
+
+layout(push_constant) uniform ScoreParameters {
+    uint width;
+    uint height;
+    uint axis; // 0 = width, 1 = height
+    uint range;
+    uint output_offset;
+    uint method; // 0 = sign, 1 = mag, 2 = orig, 3 = zerox
+} parameters;
+
+const float kFloatEpsilon = 1.1920928955078125e-7;
+
+uint sign_bit(float value) {
+    return floatBitsToUint(value) >> 31u;
+}
+
+float signed_epsilon(float value) {
+    float magnitude = max(abs(value), kFloatEpsilon);
+    return sign_bit(value) == 0u ? magnitude : -magnitude;
+}
+
+bool opposite_sign(float left, float right) {
+    return sign_bit(left) != sign_bit(right);
+}
+
+bool monotonic(float left, float center, float right) {
+    return (left < center && center < right)
+        || (left > center && center > right);
+}
+
+void main() {
+    uint coordinate = gl_GlobalInvocationID.x;
+    uint length = parameters.axis == 0u ? parameters.width : parameters.height;
+    if (coordinate >= length) {
+        return;
+    }
+
+    float score = 0.0;
+    uint effective_range = parameters.method == 3u ? 1u : parameters.range;
+    if (coordinate >= effective_range
+        && coordinate + effective_range < length) {
+        if (parameters.method == 0u) {
+            uint sign_differences = 0u;
+            if (parameters.axis == 0u) {
+                for (uint y = 0u; y < parameters.height; ++y) {
+                    uint row = y * parameters.width;
+                    for (uint i = 1u; i <= parameters.range; ++i) {
+                        sign_differences += opposite_sign(
+                            coefficients.values[row + coordinate - i],
+                            coefficients.values[row + coordinate + i]) ? 1u : 0u;
+                    }
+                }
+                score = float(sign_differences)
+                    / (float(parameters.height) * float(parameters.range));
+            } else {
+                for (uint x = 0u; x < parameters.width; ++x) {
+                    for (uint i = 1u; i <= parameters.range; ++i) {
+                        sign_differences += opposite_sign(
+                            coefficients.values[(coordinate - i) * parameters.width + x],
+                            coefficients.values[(coordinate + i) * parameters.width + x]) ? 1u : 0u;
+                    }
+                }
+                score = float(sign_differences)
+                    / (float(parameters.width) * float(parameters.range));
+            }
+        } else if (parameters.method == 1u) {
+            uint magnitude_matches = 0u;
+            if (parameters.axis == 0u) {
+                for (uint y = 0u; y < parameters.height; ++y) {
+                    uint row = y * parameters.width;
+                    for (uint i = 1u; i <= parameters.range; ++i) {
+                        float left = coefficients.values[row + coordinate - i];
+                        float right = coefficients.values[row + coordinate + i];
+                        int exponent = 0;
+                        frexp(left / signed_epsilon(right) + 1.0, exponent);
+                        magnitude_matches += exponent <= 0 ? 1u : 0u;
+                    }
+                }
+                score = float(magnitude_matches)
+                    / (float(parameters.height) * float(parameters.range));
+            } else {
+                for (uint x = 0u; x < parameters.width; ++x) {
+                    for (uint i = 1u; i <= parameters.range; ++i) {
+                        float left = coefficients.values[(coordinate - i) * parameters.width + x];
+                        float right = coefficients.values[(coordinate + i) * parameters.width + x];
+                        int exponent = 0;
+                        frexp(left / signed_epsilon(right) + 1.0, exponent);
+                        magnitude_matches += exponent <= 0 ? 1u : 0u;
+                    }
+                }
+                score = float(magnitude_matches)
+                    / (float(parameters.width) * float(parameters.range));
+            }
+        } else if (parameters.method == 2u) {
+            float center_sum = 0.0;
+            float left_sum = 0.0;
+            float right_sum = 0.0;
+            if (parameters.axis == 0u) {
+                for (uint y = 0u; y < parameters.height; ++y) {
+                    uint row = y * parameters.width;
+                    center_sum += abs(coefficients.values[row + coordinate]);
+                    for (uint i = 1u; i <= parameters.range; ++i) {
+                        left_sum += abs(coefficients.values[row + coordinate - i]);
+                        right_sum += abs(coefficients.values[row + coordinate + i]);
+                    }
+                }
+            } else {
+                for (uint x = 0u; x < parameters.width; ++x) {
+                    center_sum += abs(coefficients.values[coordinate * parameters.width + x]);
+                    for (uint i = 1u; i <= parameters.range; ++i) {
+                        left_sum += abs(coefficients.values[(coordinate - i) * parameters.width + x]);
+                        right_sum += abs(coefficients.values[(coordinate + i) * parameters.width + x]);
+                    }
+                }
+            }
+            float orthogonal_length = parameters.axis == 0u
+                ? float(parameters.height) : float(parameters.width);
+            float center = center_sum / orthogonal_length;
+            float left = left_sum / orthogonal_length;
+            float right = right_sum / orthogonal_length;
+            float middle = center * float(parameters.range);
+            float left_right_difference = abs(left - right);
+            bool candidate = min(left, right) > middle
+                && left_right_difference < abs(left - middle)
+                && left_right_difference < abs(right - middle);
+            if (candidate) {
+                uint sign_differences = 0u;
+                if (parameters.axis == 0u) {
+                    for (uint y = 0u; y < parameters.height; ++y) {
+                        uint row = y * parameters.width;
+                        for (uint i = 1u; i <= parameters.range; ++i) {
+                            sign_differences += opposite_sign(
+                                coefficients.values[row + coordinate - i],
+                                coefficients.values[row + coordinate + i]) ? 1u : 0u;
+                        }
+                    }
+                } else {
+                    for (uint x = 0u; x < parameters.width; ++x) {
+                        for (uint i = 1u; i <= parameters.range; ++i) {
+                            sign_differences += opposite_sign(
+                                coefficients.values[(coordinate - i) * parameters.width + x],
+                                coefficients.values[(coordinate + i) * parameters.width + x]) ? 1u : 0u;
+                        }
+                    }
+                }
+                score = float(sign_differences)
+                    / (orthogonal_length * float(parameters.range));
+            }
+        } else {
+            uint zero_crossings = 0u;
+            if (parameters.axis == 0u) {
+                for (uint y = 0u; y < parameters.height; ++y) {
+                    uint row = y * parameters.width;
+                    float left = coefficients.values[row + coordinate - 1u];
+                    float center = coefficients.values[row + coordinate];
+                    float right = coefficients.values[row + coordinate + 1u];
+                    zero_crossings += opposite_sign(left, right)
+                        && monotonic(left, center, right) ? 1u : 0u;
+                }
+            } else {
+                for (uint x = 0u; x < parameters.width; ++x) {
+                    float left = coefficients.values[(coordinate - 1u) * parameters.width + x];
+                    float center = coefficients.values[coordinate * parameters.width + x];
+                    float right = coefficients.values[(coordinate + 1u) * parameters.width + x];
+                    zero_crossings += opposite_sign(left, right)
+                        && monotonic(left, center, right) ? 1u : 0u;
+                }
+            }
+            score = float(zero_crossings) / (
+                parameters.axis == 0u ? float(parameters.height) : float(parameters.width));
+        }
+    }
+
+    scores.values[parameters.output_offset + coordinate] = score;
+}

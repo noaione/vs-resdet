@@ -3,6 +3,7 @@
 #include <VapourSynth4.h>
 #include <VSVulkan4.h>
 
+#include <cstring>
 #include <vulkan/vulkan_core.h>
 
 /* VkFFT is header-only and was written against Vulkan's linked prototypes.
@@ -57,6 +58,19 @@ struct VkFFTDispatch {
 
 inline thread_local VkFFTDispatch *activeVkFFTDispatch = nullptr;
 
+/* VSVulkan4 exposes push descriptors through Vulkan 1.4's core entry point,
+ * while VkFFT asks the device for the older KHR alias when it refreshes its
+ * per-dispatch descriptors. Resolve that alias to the core function so the
+ * descriptor update is not silently skipped. */
+inline PFN_vkVoidFunction vkfftGetDeviceProcAddr(VkDevice device, const char *name) {
+    if (activeVkFFTDispatch && activeVkFFTDispatch->core && name
+        && std::strcmp(name, "vkCmdPushDescriptorSetKHR") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(
+            activeVkFFTDispatch->core->vkCmdPushDescriptorSet);
+    }
+    return activeVkFFTDispatch->getDeviceProcAddr(device, name);
+}
+
 #define vkGetPhysicalDeviceProperties(...) activeVkFFTDispatch->getPhysicalDeviceProperties(__VA_ARGS__)
 #define vkGetPhysicalDeviceMemoryProperties(...) activeVkFFTDispatch->getPhysicalDeviceMemoryProperties(__VA_ARGS__)
 #define vkAllocateCommandBuffers(...) activeVkFFTDispatch->allocateCommandBuffers(__VA_ARGS__)
@@ -96,7 +110,7 @@ inline thread_local VkFFTDispatch *activeVkFFTDispatch = nullptr;
 #define vkEnumeratePhysicalDevices(...) activeVkFFTDispatch->enumeratePhysicalDevices(__VA_ARGS__)
 #define vkFreeCommandBuffers(...) activeVkFFTDispatch->freeCommandBuffers(__VA_ARGS__)
 #define vkFreeMemory(...) activeVkFFTDispatch->freeMemory(__VA_ARGS__)
-#define vkGetDeviceProcAddr(...) activeVkFFTDispatch->getDeviceProcAddr(__VA_ARGS__)
+#define vkGetDeviceProcAddr(...) vkfftGetDeviceProcAddr(__VA_ARGS__)
 #define vkGetDeviceQueue(...) activeVkFFTDispatch->getDeviceQueue(__VA_ARGS__)
 #define vkUpdateDescriptorSets(...) activeVkFFTDispatch->updateDescriptorSets(__VA_ARGS__)
 
