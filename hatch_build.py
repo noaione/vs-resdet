@@ -26,39 +26,45 @@ class NativePluginHook(BuildHookInterface[Any]):
         root = Path(self.root)
         build_directory = root / self.build_directory
         include_directory = Path(vs.get_include())
+        is_windows = platform.system() == "Windows"
+        generator = "Visual Studio 17 2022" if is_windows else "Ninja"
 
-        subprocess.run(
-            [
-                "cmake",
-                "-S",
-                str(root),
-                "-B",
-                str(build_directory),
-                "-G",
-                "Ninja",
-                "-DCMAKE_BUILD_TYPE=Release",
-                f"-DVAPOURSYNTH_INCLUDE_DIR={include_directory}",
-            ],
-            cwd=root,
-            check=True,
-        )
-        subprocess.run(
-            [
-                "cmake",
-                "--build",
-                str(build_directory),
-                "--target",
-                "vs-resdet",
-            ],
-            cwd=root,
-            check=True,
-        )
+        configure_command = [
+            "cmake",
+            "-S",
+            str(root),
+            "-B",
+            str(build_directory),
+            "-G",
+            generator,
+        ]
+        if is_windows:
+            configure_command.extend(["-A", "x64"])
+        configure_command.extend([
+            "-DCMAKE_BUILD_TYPE=Release",
+            f"-DVAPOURSYNTH_INCLUDE_DIR={include_directory}",
+        ])
+
+        subprocess.run(configure_command, cwd=root, check=True)
+
+        build_command = [
+            "cmake",
+            "--build",
+            str(build_directory),
+            "--target",
+            "vs-resdet",
+        ]
+        if is_windows:
+            build_command.extend(["--config", "Release"])
+        subprocess.run(build_command, cwd=root, check=True)
 
         extension = {
             "Darwin": ".dylib",
             "Windows": ".dll",
         }.get(platform.system(), ".so")
         native_plugin = build_directory / f"vsresdet{extension}"
+        if is_windows:
+            native_plugin = build_directory / "Release" / native_plugin.name
         if not native_plugin.is_file():
             raise RuntimeError(f"CMake did not produce {native_plugin}")
 

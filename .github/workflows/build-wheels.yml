@@ -20,13 +20,13 @@ jobs:
         include:
           - name: windows-x64
             os: windows-2025
-            plugin: vsresdet.dll
+            plugin_path: build/hatch/Release/vsresdet.dll
           - name: macos-arm64
             os: macos-26
-            plugin: vsresdet.dylib
+            plugin_path: build/hatch/vsresdet.dylib
           - name: linux-x64
             os: ubuntu-24.04
-            plugin: vsresdet.so
+            plugin_path: build/hatch/vsresdet.so
 
     steps:
       - name: check out source
@@ -102,5 +102,5 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.name }}-plugin
-          path: build/hatch/${{ matrix.plugin }}
+          path: ${{ matrix.plugin_path }}
           if-no-files-found: error

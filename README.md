@@ -42,8 +42,9 @@ integer samples up to 32 bits plus 16-bit and 32-bit float samples.
 
 ## build from source
 
-you need VapourSynth 80, CMake 3.25+, Ninja, a Vulkan SDK, and
-`glslangValidator`.
+you need VapourSynth 80, CMake 3.25+, a Vulkan SDK, and `glslangValidator`.
+Ninja is used on macOS and Linux; Windows wheel builds use the Visual Studio
+2022 generator and MSVC.
 
 ```bash
 python3 -m venv .venv
