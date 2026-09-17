@@ -94,7 +94,7 @@ jobs:
       - name: upload wheel
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ matrix.name }}
+          name: ${{ matrix.name }}-wheels
           path: dist/*.whl
           if-no-files-found: error
 

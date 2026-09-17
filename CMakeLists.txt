@@ -72,7 +72,22 @@ if(VULKAN_SDK_ROOT AND NOT glslang_DIR)
         endif()
     endforeach()
 endif()
-find_package(glslang CONFIG REQUIRED)
+
+# Homebrew and Linux development packages export glslang's own CMake package.
+# The Windows Vulkan SDK ships the same libraries and headers, but some SDK
+# layouts only expose them through FindVulkan instead of glslangConfig.cmake.
+find_package(glslang CONFIG QUIET)
+if(TARGET glslang::SPIRV)
+    set(VS_RESD_GLSLANG_TARGET glslang::SPIRV)
+else()
+    find_package(Vulkan REQUIRED COMPONENTS glslang)
+    if(NOT TARGET Vulkan::glslang)
+        message(FATAL_ERROR
+            "Could not find a usable glslang CMake package or Vulkan::glslang target."
+        )
+    endif()
+    set(VS_RESD_GLSLANG_TARGET Vulkan::glslang)
+endif()
 
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shaders/unpack_y.comp" UNPACK_Y_SHADER)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shaders/score_methods.comp" SCORE_METHODS_SHADER)
@@ -157,7 +172,7 @@ target_include_directories(vs-resdet PRIVATE
 )
 target_link_libraries(vs-resdet PRIVATE
     vs-resdet-vkfft
-    glslang::SPIRV
+    ${VS_RESD_GLSLANG_TARGET}
 )
 target_compile_definitions(vs-resdet PRIVATE
     VS_USE_API_43=1
