@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import subprocess
@@ -27,7 +28,10 @@ class NativePluginHook(BuildHookInterface[Any]):
         build_directory = root / self.build_directory
         include_directory = Path(vs.get_include())
         is_windows = platform.system() == "Windows"
-        generator = "Visual Studio 17 2022" if is_windows else "Ninja"
+        generator = os.environ.get(
+            "CMAKE_GENERATOR",
+            "Visual Studio 17 2022" if is_windows else "Ninja",
+        )
 
         configure_command = [
             "cmake",
@@ -39,7 +43,10 @@ class NativePluginHook(BuildHookInterface[Any]):
             generator,
         ]
         if is_windows:
-            configure_command.extend(["-A", "x64"])
+            configure_command.extend([
+                "-A",
+                os.environ.get("CMAKE_GENERATOR_PLATFORM", "x64"),
+            ])
         configure_command.extend([
             "-DCMAKE_BUILD_TYPE=Release",
             f"-DVAPOURSYNTH_INCLUDE_DIR={include_directory}",
