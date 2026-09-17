@@ -87,6 +87,43 @@ else()
         )
     endif()
     set(VS_RESD_GLSLANG_TARGET Vulkan::glslang)
+
+    # FindVulkan's Vulkan::glslang target covers the glslang libraries shipped
+    # by the SDK, but some SDK releases build glslang with SPIR-V Tools support
+    # without expressing those static-library dependencies in the target.  In
+    # that case SpvTools.obj leaves both the SPIR-V C API and optimizer symbols
+    # unresolved at link time (notably with the Windows SDK).
+    find_library(VS_RESD_SPIRV_TOOLS_OPT_LIBRARY
+        NAMES SPIRV-Tools-opt SPIRV-Tools-optd
+        HINTS
+            "${VULKAN_SDK_ROOT}/lib"
+            "${VULKAN_SDK_ROOT}/Lib"
+    )
+    find_library(VS_RESD_SPIRV_TOOLS_LIBRARY
+        NAMES SPIRV-Tools SPIRV-Toolsd
+        HINTS
+            "${VULKAN_SDK_ROOT}/lib"
+            "${VULKAN_SDK_ROOT}/Lib"
+    )
+    if(NOT VS_RESD_SPIRV_TOOLS_OPT_LIBRARY OR NOT VS_RESD_SPIRV_TOOLS_LIBRARY)
+        message(FATAL_ERROR
+            "The Vulkan SDK glslang fallback requires SPIRV-Tools-opt and "
+            "SPIRV-Tools libraries. Set VULKAN_SDK or provide a glslang CMake package."
+        )
+    endif()
+
+    add_library(vs-resdet-spirv-tools-opt UNKNOWN IMPORTED)
+    set_target_properties(vs-resdet-spirv-tools-opt PROPERTIES
+        IMPORTED_LOCATION "${VS_RESD_SPIRV_TOOLS_OPT_LIBRARY}"
+    )
+    add_library(vs-resdet-spirv-tools UNKNOWN IMPORTED)
+    set_target_properties(vs-resdet-spirv-tools PROPERTIES
+        IMPORTED_LOCATION "${VS_RESD_SPIRV_TOOLS_LIBRARY}"
+    )
+    list(APPEND VS_RESD_GLSLANG_TARGET
+        vs-resdet-spirv-tools-opt
+        vs-resdet-spirv-tools
+    )
 endif()
 
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shaders/unpack_y.comp" UNPACK_Y_SHADER)
