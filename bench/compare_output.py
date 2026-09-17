@@ -125,8 +125,8 @@ def main() -> None:
             range=args.score_range,
         )
         frame = analyzed.get_frame(0)
-        actual_width = [float(value) for value in frame.props["resdet_width_scores"]]
-        actual_height = [float(value) for value in frame.props["resdet_height_scores"]]
+        actual_width = [float(value) for value in frame.props["ResdetWidth"]]
+        actual_height = [float(value) for value in frame.props["ResdetHeight"]]
         width_difference = max_difference(expected_width, actual_width, args.atol)
         height_difference = max_difference(expected_height, actual_height, args.atol)
         method_failed = (

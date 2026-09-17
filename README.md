@@ -32,8 +32,8 @@ gpu_clip = core.std.GPUUpload(clip)
 result = core.resdet.Analyze(gpu_clip, range=1)
 frame = result.get_frame(0)
 
-width_scores = frame.props["resdet_width_scores"]
-height_scores = frame.props["resdet_height_scores"]
+width_scores = frame.props["ResdetWidth"]
+height_scores = frame.props["ResdetHeight"]
 ```
 
 pass `debug=True` to attach the method, bounds, and range properties:
@@ -42,10 +42,10 @@ pass `debug=True` to attach the method, bounds, and range properties:
 debug_result = core.resdet.Analyze(gpu_clip, range=1, debug=True)
 debug_frame = debug_result.get_frame(0)
 
-method = debug_frame.props["resdet_method"]
-width_bounds = debug_frame.props["resdet_width_bounds"]
-height_bounds = debug_frame.props["resdet_height_bounds"]
-score_range = debug_frame.props["resdet_range"]
+method = debug_frame.props["ResdetMethod"]
+width_bounds = debug_frame.props["ResdetWidthBounds"]
+height_bounds = debug_frame.props["ResdetHeightBounds"]
+score_range = debug_frame.props["ResdetRange"]
 ```
 
 the current implementation analyzes the Y plane and supports

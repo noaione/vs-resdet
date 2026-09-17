@@ -22,9 +22,9 @@ constexpr int kVapourSynthApi = VAPOURSYNTH_API_VERSION;
 constexpr uint32_t kUnpackLocalSize = 64;
 constexpr uint32_t kScoreLocalSize = 64;
 constexpr size_t kErrorBufferSize = 1024;
-constexpr const char *kWidthScoresProperty = "resdet_width_scores";
-constexpr const char *kHeightScoresProperty = "resdet_height_scores";
-constexpr const char *kMethodProperty = "resdet_method";
+constexpr const char *kWidthScoresProperty = "ResdetWidth";
+constexpr const char *kHeightScoresProperty = "ResdetHeight";
+constexpr const char *kMethodProperty = "ResdetMethod";
 
 enum class Method : uint32_t {
     Sign = 0,
@@ -718,9 +718,9 @@ static const VSFrame *Analyze(AnalyzeData &data, const VSFrame *input,
         }
         const int64_t bounds[2] = {data.range, static_cast<int64_t>(data.vi.width) - data.range};
         const int64_t heightBounds[2] = {data.range, static_cast<int64_t>(data.vi.height) - data.range};
-        if (data.vsapi->mapSetIntArray(properties, "resdet_width_bounds", bounds, 2) != 0
-            || data.vsapi->mapSetIntArray(properties, "resdet_height_bounds", heightBounds, 2) != 0
-            || data.vsapi->mapSetInt(properties, "resdet_range", data.range, 0) != 0) {
+        if (data.vsapi->mapSetIntArray(properties, "ResdetWidthBounds", bounds, 2) != 0
+            || data.vsapi->mapSetIntArray(properties, "ResdetHeightBounds", heightBounds, 2) != 0
+            || data.vsapi->mapSetInt(properties, "ResdetRange", data.range, 0) != 0) {
             data.vsapi->freeFrame(output);
             error = "VapourSynth could not attach resdet debug properties";
             destroyBuffer(data, scoreBuffer);

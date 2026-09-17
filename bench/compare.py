@@ -237,7 +237,7 @@ def benchmark_gpu(args: argparse.Namespace) -> BenchmarkResult:
     analyzed = core.resdet.Analyze(clip, method=args.method, range=args.score_range)
 
     first_frame = analyzed.get_frame(0)
-    if "resdet_width_scores" not in first_frame.props:
+    if "ResdetWidth" not in first_frame.props:
         raise RuntimeError("GPU benchmark did not receive resdet frame properties")
     for frame_index in range(1, args.warmup + 1):
         analyzed.get_frame(frame_index)

@@ -18,9 +18,9 @@ the registered function signature is:
 Analyze(clip:vnode:gpu; range:int:opt; debug:int:opt;) -> clip:vnode:gpu;
 ```
 
-frame properties are `resdet_width_scores` and `resdet_height_scores`.
-`debug=True` additionally attaches `resdet_method`, `resdet_width_bounds`,
-`resdet_height_bounds`, and `resdet_range`.
+frame properties are `ResdetWidth` and `ResdetHeight`.
+`debug=True` additionally attaches `ResdetMethod`, `ResdetWidthBounds`,
+`ResdetHeightBounds`, and `ResdetRange`.
 
 ## source layout
 
