@@ -38,6 +38,22 @@ def main() -> None:
     height_scores = frame.props["resdet_height_scores"]
     assert len(width_scores) == args.width
     assert len(height_scores) == args.height
+    assert "resdet_method" not in frame.props
+    assert "resdet_width_bounds" not in frame.props
+    assert "resdet_height_bounds" not in frame.props
+    assert "resdet_range" not in frame.props
+
+    debug_frame = core.resdet.Analyze(
+        clip, range=args.score_range, debug=True
+    ).get_frame(0)
+    assert debug_frame.props["resdet_method"] == "sign"
+    assert list(debug_frame.props["resdet_width_bounds"]) == [
+        args.score_range, args.width - args.score_range
+    ]
+    assert list(debug_frame.props["resdet_height_bounds"]) == [
+        args.score_range, args.height - args.score_range
+    ]
+    assert debug_frame.props["resdet_range"] == args.score_range
     print(
         f"GPU Analyze passed: device={args.device} "
         f"width_scores={len(width_scores)} height_scores={len(height_scores)}"

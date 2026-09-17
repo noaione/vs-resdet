@@ -71,6 +71,7 @@ struct AnalyzeData {
     VSVideoInfo vi{};
     int range = 1;
     Method method = Method::Sign;
+    bool debug = false;
 
     VSCore *core = nullptr;
     const VSAPI *vsapi = nullptr;
@@ -125,7 +126,7 @@ static const char *methodName(Method method) {
 static bool parseMethod(const VSMap *map, const VSAPI *vsapi,
                         Method &method, std::string &error) {
     method = Method::Sign;
-    if (vsapi->mapNumElements(map, "method") == 0) {
+    if (vsapi->mapNumElements(map, "method") <= 0) {
         return true;
     }
 
@@ -699,21 +700,33 @@ static const VSFrame *Analyze(AnalyzeData &data, const VSFrame *input,
     if (data.vsapi->mapSetFloatArray(properties, kWidthScoresProperty,
                                      widthScores.data(), static_cast<int>(widthScores.size())) != 0
         || data.vsapi->mapSetFloatArray(properties, kHeightScoresProperty,
-                                        heightScores.data(), static_cast<int>(heightScores.size())) != 0
-        || data.vsapi->mapSetData(properties, kMethodProperty,
-                                  methodName(data.method),
-                                  static_cast<int>(std::strlen(methodName(data.method))),
-                                  dtUtf8, 0) != 0) {
+                                        heightScores.data(), static_cast<int>(heightScores.size())) != 0) {
         data.vsapi->freeFrame(output);
         error = "VapourSynth could not attach resdet score properties";
         destroyBuffer(data, scoreBuffer);
         return nullptr;
     }
-    const int64_t bounds[2] = {data.range, static_cast<int64_t>(data.vi.width) - data.range};
-    const int64_t heightBounds[2] = {data.range, static_cast<int64_t>(data.vi.height) - data.range};
-    data.vsapi->mapSetIntArray(properties, "resdet_width_bounds", bounds, 2);
-    data.vsapi->mapSetIntArray(properties, "resdet_height_bounds", heightBounds, 2);
-    data.vsapi->mapSetInt(properties, "resdet_range", data.range, 0);
+    if (data.debug) {
+        if (data.vsapi->mapSetData(properties, kMethodProperty,
+                                   methodName(data.method),
+                                   static_cast<int>(std::strlen(methodName(data.method))),
+                                   dtUtf8, 0) != 0) {
+            data.vsapi->freeFrame(output);
+            error = "VapourSynth could not attach resdet debug properties";
+            destroyBuffer(data, scoreBuffer);
+            return nullptr;
+        }
+        const int64_t bounds[2] = {data.range, static_cast<int64_t>(data.vi.width) - data.range};
+        const int64_t heightBounds[2] = {data.range, static_cast<int64_t>(data.vi.height) - data.range};
+        if (data.vsapi->mapSetIntArray(properties, "resdet_width_bounds", bounds, 2) != 0
+            || data.vsapi->mapSetIntArray(properties, "resdet_height_bounds", heightBounds, 2) != 0
+            || data.vsapi->mapSetInt(properties, "resdet_range", data.range, 0) != 0) {
+            data.vsapi->freeFrame(output);
+            error = "VapourSynth could not attach resdet debug properties";
+            destroyBuffer(data, scoreBuffer);
+            return nullptr;
+        }
+    }
 
     destroyBuffer(data, scoreBuffer);
     return output;
@@ -899,6 +912,20 @@ static void VS_CC AnalyzeCreate(const VSMap *in, VSMap *out, void *,
         vsapi->mapSetError(out, "resdet.Analyze: range must be a positive integer");
         return;
     }
+
+    bool debug = false;
+    if (vsapi->mapNumElements(in, "debug") > 0) {
+        const int64_t debugValue = vsapi->mapGetInt(in, "debug", 0, &error);
+        if (!error && debugValue != 0 && debugValue != 1) {
+            error = 1;
+        }
+        debug = debugValue != 0;
+    }
+    if (error) {
+        vsapi->freeNode(input);
+        vsapi->mapSetError(out, "resdet.Analyze: debug must be a boolean");
+        return;
+    }
     if (method == Method::ZeroCrossing) {
         range = 1;
     }
@@ -908,6 +935,7 @@ static void VS_CC AnalyzeCreate(const VSMap *in, VSMap *out, void *,
     data->vi = *vi;
     data->range = range;
     data->method = method;
+    data->debug = debug;
     data->core = core;
     data->vsapi = vsapi;
     data->gpu = vsapi->getVulkanAPI();
@@ -979,6 +1007,6 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(
         "com.vs-resdet.analyze", "resdet", "A GPU-accelerated source resolution detection for upscaled images and videos.",
         VS_MAKE_VERSION(0, 1), kVapourSynthApi, 0, plugin);
     vspapi->registerFunction(
-        "Analyze", "clip:vnode:gpu;method:data:opt;range:int:opt;", "clip:vnode:gpu;",
+        "Analyze", "clip:vnode:gpu;method:data:opt;range:int:opt;debug:int:opt;", "clip:vnode:gpu;",
         AnalyzeCreate, nullptr, plugin);
 }

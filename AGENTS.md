@@ -15,11 +15,12 @@ shaders, and attaches the results as frame properties.
 the registered function signature is:
 
 ```text
-Analyze(clip:vnode:gpu; range:int:opt;) -> clip:vnode:gpu;
+Analyze(clip:vnode:gpu; range:int:opt; debug:int:opt;) -> clip:vnode:gpu;
 ```
 
-frame properties are `resdet_width_scores`, `resdet_height_scores`,
-`resdet_width_bounds`, `resdet_height_bounds`, and `resdet_range`.
+frame properties are `resdet_width_scores` and `resdet_height_scores`.
+`debug=True` additionally attaches `resdet_method`, `resdet_width_bounds`,
+`resdet_height_bounds`, and `resdet_range`.
 
 ## source layout
 

@@ -36,8 +36,19 @@ width_scores = frame.props["resdet_width_scores"]
 height_scores = frame.props["resdet_height_scores"]
 ```
 
-the output also contains `resdet_width_bounds`, `resdet_height_bounds`, and
-`resdet_range`. the current implementation analyzes the Y plane and supports
+pass `debug=True` to attach the method, bounds, and range properties:
+
+```python
+debug_result = core.resdet.Analyze(gpu_clip, range=1, debug=True)
+debug_frame = debug_result.get_frame(0)
+
+method = debug_frame.props["resdet_method"]
+width_bounds = debug_frame.props["resdet_width_bounds"]
+height_bounds = debug_frame.props["resdet_height_bounds"]
+score_range = debug_frame.props["resdet_range"]
+```
+
+the current implementation analyzes the Y plane and supports
 integer samples up to 32 bits plus 16-bit and 32-bit float samples.
 
 ## build from source
