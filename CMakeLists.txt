@@ -39,9 +39,14 @@ endif()
 # Prefer the Homebrew package installed for this checkout.  Its config file
 # pulls in SPIRV-Tools-opt, so /opt/homebrew is also included in the prefix
 # search path for that transitive dependency.
-list(PREPEND CMAKE_PREFIX_PATH "/opt/homebrew")
-set(glslang_DIR "/opt/homebrew/opt/glslang/lib/cmake/glslang"
-    CACHE PATH "glslang CMake package directory")
+if(APPLE)
+    list(PREPEND CMAKE_PREFIX_PATH "/opt/homebrew")
+    if(NOT glslang_DIR
+       AND EXISTS "/opt/homebrew/opt/glslang/lib/cmake/glslang")
+        set(glslang_DIR "/opt/homebrew/opt/glslang/lib/cmake/glslang"
+            CACHE PATH "glslang CMake package directory")
+    endif()
+endif()
 find_package(glslang CONFIG REQUIRED)
 
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shaders/unpack_y.comp" UNPACK_Y_SHADER)
@@ -129,10 +134,12 @@ target_compile_definitions(vs-resdet PRIVATE
     VS_USE_API_43=1
     VK_ENABLE_BETA_EXTENSIONS=1
 )
-target_compile_options(vs-resdet PRIVATE
-    -Wno-deprecated-declarations
-    -Wno-comment
-)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(vs-resdet PRIVATE
+        -Wno-deprecated-declarations
+        -Wno-comment
+    )
+endif()
 set_target_properties(vs-resdet PROPERTIES
     PREFIX ""
     OUTPUT_NAME "vsresdet"

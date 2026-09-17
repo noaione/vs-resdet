@@ -1,0 +1,92 @@
+name: build wheels
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-wheel:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-2025
+            plugin: vsresdet.dll
+          - name: macos-arm64
+            os: macos-26
+            plugin: vsresdet.dylib
+          - name: linux-x64
+            os: ubuntu-24.04
+            plugin: vsresdet.so
+
+    steps:
+      - name: check out source
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: set up python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: install windows Vulkan SDK
+        if: runner.os == 'Windows'
+        uses: jakoch/install-vulkan-sdk-action@v1.6.0
+        with:
+          vulkan_version: 1.4.357.0
+          install_runtime: false
+          stripdown: true
+          cache: true
+
+      - name: expose windows Vulkan SDK to CMake
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "CMAKE_PREFIX_PATH=$env:VULKAN_SDK" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$env:VULKAN_SDK\Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: install macOS build dependencies
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install ninja glslang vulkan-loader
+          echo "$(brew --prefix glslang)/bin" >> "$GITHUB_PATH"
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix glslang);$(brew --prefix vulkan-loader)" >> "$GITHUB_ENV"
+
+      - name: install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            glslang-dev glslang-tools libvulkan-dev ninja-build
+
+      - name: install Python build dependencies
+        run: python -m pip install --upgrade pip build
+
+      - name: build wheel
+        run: python -m build --wheel
+
+      - name: upload wheel
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+      - name: upload native plugin
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.name }}-plugin
+          path: build/hatch/${{ matrix.plugin }}
+          if-no-files-found: error
