@@ -2,9 +2,10 @@
 
 ## project
 
-`vs-resdet` is a native VapourSynth 80 plugin. the repository does not contain
-a runtime python package. python is used only for the build hook, tests, and
-benchmark tooling.
+`vapoursynth-resdet` is a native VapourSynth 80 plugin. the internal cmake
+target and implementation shorthand remain `vs-resdet`. the repository does
+not contain a runtime python package. python is used only for the build hook,
+tests, and benchmark tooling.
 
 the plugin entry point is `resdet.Analyze`. it requires a gpu-resident video
 node, reads plane 0 (Y), unpacks and normalizes samples to `float`, performs a

@@ -1,6 +1,6 @@
-# vs-resdet
+# vapoursynth-resdet
 
-`vs-resdet` is a VapourSynth plugin that detects the likely source resolution
+`vapoursynth-resdet` is a VapourSynth plugin that detects the likely source resolution
 of an upscaled image or video frame.
 
 it runs the analysis on the gpu. the input must already be gpu-resident. the
@@ -14,7 +14,7 @@ the wheel contains only the native plugin. it does not install a python module.
 install the wheel with pip:
 
 ```bash
-python -m pip install vs_resdet-*.whl
+python -m pip install vapoursynth_resdet-*.whl
 ```
 
 the native library is installed in VapourSynth's plugin directory. after
@@ -43,8 +43,8 @@ integer samples up to 32 bits plus 16-bit and 32-bit float samples.
 ## build from source
 
 you need VapourSynth 80, CMake 3.25+, a Vulkan SDK, and `glslangValidator`.
-Ninja is used on macOS and Linux; Windows wheel builds use the Visual Studio
-2022 generator and MSVC.
+Ninja is used on macOS and Linux; Windows wheel builds use the installed
+Visual Studio generator and MSVC.
 
 ```bash
 python3 -m venv .venv

@@ -1,6 +1,6 @@
 # third-party notices
 
-`vs-resdet` is released under the MIT License in `LICENSE`.
+`vapoursynth-resdet` is released under the MIT License in `LICENSE`.
 
 ## resdet
 

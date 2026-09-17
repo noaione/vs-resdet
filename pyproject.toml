@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27", "packaging", "VapourSynth>=80,<81"]
 build-backend = "hatchling.build"
 
 [project]
-name = "vs-resdet"
+name = "vapoursynth-resdet"
 version = "0.1.0"
 description = "Native Vulkan VapourSynth plugin for resdet"
 readme = "README.md"
